@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { FileViewer, SvgViewer } from './FileViewer';
+import { FileViewer, SvgViewer, applyInspectOverridesToSource } from './FileViewer';
 import type { ProjectFile } from '../types';
 
 function baseFile(overrides: Partial<ProjectFile>): ProjectFile {
@@ -100,5 +100,38 @@ describe('FileViewer SVG artifacts', () => {
     expect(markup).not.toContain('<script>');
     expect(markup).not.toContain('<![CDATA[');
     expect(markup).not.toContain('dangerouslySetInnerHTML');
+  });
+});
+
+describe('applyInspectOverridesToSource', () => {
+  const base = `<!doctype html><html><head><title>X</title></head><body><main data-od-id="hero">Hi</main></body></html>`;
+  const css = `[data-od-id="hero"] { color: #ff0000 !important }`;
+
+  it('inserts the overrides block before </head>', () => {
+    const next = applyInspectOverridesToSource(base, css);
+    expect(next).toContain('<style data-od-inspect-overrides>');
+    expect(next).toContain('color: #ff0000');
+    expect(next.indexOf('<style data-od-inspect-overrides>')).toBeLessThan(next.indexOf('</head>'));
+  });
+
+  it('replaces an existing overrides block instead of duplicating', () => {
+    const once = applyInspectOverridesToSource(base, css);
+    const twice = applyInspectOverridesToSource(once, `[data-od-id="hero"] { color: #00ff00 !important }`);
+    const matches = twice.match(/<style data-od-inspect-overrides>/g) ?? [];
+    expect(matches).toHaveLength(1);
+    expect(twice).toContain('color: #00ff00');
+    expect(twice).not.toContain('color: #ff0000');
+  });
+
+  it('strips the overrides block when called with empty css', () => {
+    const once = applyInspectOverridesToSource(base, css);
+    const stripped = applyInspectOverridesToSource(once, '');
+    expect(stripped).not.toContain('data-od-inspect-overrides');
+  });
+
+  it('handles fragments without an explicit <head>', () => {
+    const next = applyInspectOverridesToSource('<main data-od-id="x">x</main>', css);
+    expect(next).toContain('<style data-od-inspect-overrides>');
+    expect(next.indexOf('<style data-od-inspect-overrides>')).toBeLessThan(next.indexOf('<main'));
   });
 });

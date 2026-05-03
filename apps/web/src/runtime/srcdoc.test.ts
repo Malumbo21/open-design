@@ -41,18 +41,39 @@ describe('buildSrcdoc', () => {
     expect(canSetActive).not.toContain('findActiveByVisibility');
   });
 
-  it('enables the comment bridge immediately when injected', () => {
+  it('injects the selection bridge for comment mode', () => {
     const srcdoc = buildSrcdoc('<main data-od-id="hero">Hero</main>', {
       commentBridge: true,
     });
 
-    expect(srcdoc).toContain('data-od-comment-bridge');
-    expect(srcdoc).toContain('var enabled = true;');
+    expect(srcdoc).toContain('data-od-selection-bridge');
+    expect(srcdoc).toContain('var commentEnabled = false;');
+    expect(srcdoc).toContain('var inspectEnabled = false;');
     expect(srcdoc).toContain("type: 'od:comment-target'");
     expect(srcdoc).toContain("type: 'od:comment-hover'");
     expect(srcdoc).toContain("type: 'od:comment-leave'");
     expect(srcdoc).toContain("type: 'od:comment-targets'");
     expect(srcdoc).toContain("document.addEventListener('scroll', schedulePostTargets, true);");
-    expect(srcdoc).toContain('data-od-comment-bridge-style');
+    expect(srcdoc).toContain('data-od-selection-bridge-style');
+  });
+
+  it('injects the selection bridge for inspect mode and exposes override hooks', () => {
+    const srcdoc = buildSrcdoc('<main data-od-id="hero">Hero</main>', {
+      inspectBridge: true,
+    });
+
+    expect(srcdoc).toContain('data-od-selection-bridge');
+    expect(srcdoc).toContain("type: 'od:inspect-overrides'");
+    expect(srcdoc).toContain("data.type === 'od:inspect-mode'");
+    expect(srcdoc).toContain("data.type === 'od:inspect-set'");
+    expect(srcdoc).toContain("data.type === 'od:inspect-reset'");
+    expect(srcdoc).toContain("data.type === 'od:inspect-extract'");
+    expect(srcdoc).toContain("data-od-inspect-overrides");
+    expect(srcdoc).toContain('html[data-od-inspect-mode]');
+  });
+
+  it('omits the selection bridge entirely when neither comment nor inspect mode is on', () => {
+    const srcdoc = buildSrcdoc('<main data-od-id="hero">Hero</main>', {});
+    expect(srcdoc).not.toContain('data-od-selection-bridge');
   });
 });

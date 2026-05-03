@@ -16,7 +16,13 @@
  */
 export function buildSrcdoc(
   html: string,
-  options: { deck?: boolean; baseHref?: string; initialSlideIndex?: number; commentBridge?: boolean } = {}
+  options: {
+    deck?: boolean;
+    baseHref?: string;
+    initialSlideIndex?: number;
+    commentBridge?: boolean;
+    inspectBridge?: boolean;
+  } = {}
 ): string {
   const head = html.trimStart().slice(0, 64).toLowerCase();
   const isFullDoc = head.startsWith("<!doctype") || head.startsWith("<html");
@@ -33,7 +39,13 @@ export function buildSrcdoc(
   const withBase = options.baseHref ? injectBaseHref(wrapped, options.baseHref) : wrapped;
   const withShim = injectSandboxShim(withBase);
   const withDeck = options.deck ? injectDeckBridge(withShim, options.initialSlideIndex) : withShim;
-  return options.commentBridge ? injectCommentBridge(withDeck) : withDeck;
+  // Comment + Inspect share an element-selection bridge: both pick a
+  // [data-od-id] / [data-screen-label] node and route the host's reply
+  // to either the comment popover (annotate) or the inspect panel
+  // (live-style overrides). Inject once when either mode is on.
+  return options.commentBridge || options.inspectBridge
+    ? injectSelectionBridge(withDeck)
+    : withDeck;
 }
 
 function injectBaseHref(doc: string, baseHref: string): string {
@@ -96,11 +108,89 @@ function injectSandboxShim(doc: string): string {
   return shim + doc;
 }
 
-function injectCommentBridge(doc: string): string {
-  const script = `<script data-od-comment-bridge>(function(){
-  var enabled = true;
+// Selection bridge: shared substrate for Comment mode and Inspect mode.
+// Both modes pick a [data-od-id] / [data-screen-label] element on click;
+// the difference is what the host does with the selection — annotate
+// (Comment) or live-tune basic styles (Inspect).
+//
+// Inspect adds three messages on top of the comment protocol:
+//   in:  { type: 'od:inspect-set', elementId, selector, prop, value }
+//        Apply (or unset, when value === '') a per-element CSS override.
+//   in:  { type: 'od:inspect-reset', elementId? } Clear overrides for one
+//        element, or all if elementId is omitted.
+//   in:  { type: 'od:inspect-extract' } Reply with the cumulative
+//        override map so the host can persist to source.
+//   out: { type: 'od:inspect-overrides', overrides, css } The current
+//        snapshot, sent in reply to extract and after every set/reset.
+//
+// Overrides are written into a single <style data-od-inspect-overrides>
+// block in <head>, with `!important` on every property so the bridge
+// can defeat author inline styles (common in agent-generated HTML).
+function injectSelectionBridge(doc: string): string {
+  const script = `<script data-od-selection-bridge>(function(){
+  var commentEnabled = false;
+  var inspectEnabled = false;
   var hoveredId = null;
+  // overrides[elementId] = { selector: '[data-od-id="x"]', props: { color: '#fff', ... } }
+  var overrides = Object.create(null);
+  var styleEl = null;
+  function active(){ return commentEnabled || inspectEnabled; }
   function esc(value){ try { return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/"/g, '\\\\"'); } catch (_) { return String(value); } }
+  function ensureStyleEl(){
+    if (styleEl && styleEl.isConnected) return styleEl;
+    styleEl = document.querySelector('style[data-od-inspect-overrides]');
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.setAttribute('data-od-inspect-overrides', '');
+      (document.head || document.documentElement).appendChild(styleEl);
+    }
+    return styleEl;
+  }
+  function rebuildStyleSheet(){
+    var el = ensureStyleEl();
+    var lines = [];
+    Object.keys(overrides).forEach(function(id){
+      var entry = overrides[id];
+      if (!entry) return;
+      var props = entry.props || {};
+      var keys = Object.keys(props);
+      if (!keys.length) return;
+      var body = keys.map(function(k){ return k + ': ' + props[k] + ' !important'; }).join('; ');
+      lines.push(entry.selector + ' { ' + body + ' }');
+    });
+    el.textContent = lines.join('\\n');
+  }
+  function postOverrides(){
+    var clean = {};
+    Object.keys(overrides).forEach(function(id){
+      var entry = overrides[id];
+      if (entry && entry.props && Object.keys(entry.props).length) {
+        clean[id] = { selector: entry.selector, props: Object.assign({}, entry.props) };
+      }
+    });
+    var css = '';
+    if (styleEl && styleEl.textContent) css = styleEl.textContent;
+    try { window.parent.postMessage({ type: 'od:inspect-overrides', overrides: clean, css: css }, '*'); } catch (_) {}
+  }
+  function styleSnapshot(el){
+    try {
+      var cs = window.getComputedStyle(el);
+      return {
+        color: cs.color,
+        backgroundColor: cs.backgroundColor,
+        fontSize: cs.fontSize,
+        fontWeight: cs.fontWeight,
+        lineHeight: cs.lineHeight,
+        paddingTop: cs.paddingTop,
+        paddingRight: cs.paddingRight,
+        paddingBottom: cs.paddingBottom,
+        paddingLeft: cs.paddingLeft,
+        borderRadius: cs.borderTopLeftRadius,
+        textAlign: cs.textAlign,
+        fontFamily: cs.fontFamily
+      };
+    } catch (_) { return null; }
+  }
   function targetFrom(el){
     var id = el.getAttribute('data-od-id') || el.getAttribute('data-screen-label');
     if (!id) return null;
@@ -116,7 +206,8 @@ function injectCommentBridge(doc: string): string {
       label: tag + cls,
       text: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160),
       position: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
-      htmlHint: html.slice(0, 180)
+      htmlHint: html.slice(0, 180),
+      style: styleSnapshot(el)
     };
   }
   function allTargets(){
@@ -130,11 +221,11 @@ function injectCommentBridge(doc: string): string {
   }
   var postTargetsPending = false;
   function postTargets(){
-    if (!enabled) return;
+    if (!active()) return;
     window.parent.postMessage({ type: 'od:comment-targets', targets: allTargets() }, '*');
   }
   function schedulePostTargets(){
-    if (!enabled || postTargetsPending) return;
+    if (!active() || postTargetsPending) return;
     postTargetsPending = true;
     window.requestAnimationFrame(function(){
       postTargetsPending = false;
@@ -149,15 +240,65 @@ function injectCommentBridge(doc: string): string {
     }
     return null;
   }
+  function selectorFor(el){
+    var id = el.getAttribute('data-od-id') || el.getAttribute('data-screen-label');
+    if (!id) return null;
+    return el.hasAttribute('data-od-id') ? '[data-od-id="' + esc(id) + '"]' : '[data-screen-label="' + esc(id) + '"]';
+  }
+  function applyOverride(elementId, selector, prop, value){
+    if (!elementId || !selector || !prop) return;
+    var entry = overrides[elementId];
+    if (!entry) {
+      entry = { selector: selector, props: Object.create(null) };
+      overrides[elementId] = entry;
+    } else {
+      entry.selector = selector;
+    }
+    var v = (value == null) ? '' : String(value).trim();
+    if (!v) delete entry.props[prop];
+    else entry.props[prop] = v;
+    if (Object.keys(entry.props).length === 0) delete overrides[elementId];
+    rebuildStyleSheet();
+    postOverrides();
+  }
+  function resetOverrides(elementId){
+    if (elementId) delete overrides[elementId];
+    else overrides = Object.create(null);
+    rebuildStyleSheet();
+    postOverrides();
+  }
   window.addEventListener('message', function(ev){
-    if (!ev.data || ev.data.type !== 'od:comment-mode') return;
-    enabled = !!ev.data.enabled;
-    document.documentElement.toggleAttribute('data-od-comment-mode', enabled);
-    if (enabled) setTimeout(postTargets, 0);
-    else hoveredId = null;
+    var data = ev && ev.data;
+    if (!data || !data.type) return;
+    if (data.type === 'od:comment-mode') {
+      commentEnabled = !!data.enabled;
+      document.documentElement.toggleAttribute('data-od-comment-mode', commentEnabled);
+      if (active()) setTimeout(postTargets, 0);
+      else hoveredId = null;
+      return;
+    }
+    if (data.type === 'od:inspect-mode') {
+      inspectEnabled = !!data.enabled;
+      document.documentElement.toggleAttribute('data-od-inspect-mode', inspectEnabled);
+      if (active()) setTimeout(postTargets, 0);
+      else hoveredId = null;
+      return;
+    }
+    if (data.type === 'od:inspect-set') {
+      applyOverride(data.elementId, data.selector, data.prop, data.value);
+      return;
+    }
+    if (data.type === 'od:inspect-reset') {
+      resetOverrides(data.elementId);
+      return;
+    }
+    if (data.type === 'od:inspect-extract') {
+      postOverrides();
+      return;
+    }
   });
   document.addEventListener('mouseover', function(ev){
-    if (!enabled) return;
+    if (!active()) return;
     var el = closestTarget(ev);
     if (!el) return;
     var payload = targetFrom(el);
@@ -166,7 +307,7 @@ function injectCommentBridge(doc: string): string {
     window.parent.postMessage(Object.assign({}, payload, { type: 'od:comment-hover' }), '*');
   }, true);
   document.addEventListener('mouseout', function(ev){
-    if (!enabled) return;
+    if (!active()) return;
     var el = closestTarget(ev);
     if (!el) return;
     var next = ev.relatedTarget;
@@ -178,7 +319,7 @@ function injectCommentBridge(doc: string): string {
     window.parent.postMessage({ type: 'od:comment-leave' }, '*');
   }, true);
   document.addEventListener('click', function(ev){
-    if (!enabled) return;
+    if (!active()) return;
     var el = closestTarget(ev);
     if (!el) return;
     ev.preventDefault();
@@ -191,9 +332,11 @@ function injectCommentBridge(doc: string): string {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', postTargets);
   else setTimeout(postTargets, 0);
 })();</script>`;
-  const style = `<style data-od-comment-bridge-style>
+  const style = `<style data-od-selection-bridge-style>
 html[data-od-comment-mode] [data-od-id],
-html[data-od-comment-mode] [data-screen-label] { cursor: crosshair !important; }
+html[data-od-comment-mode] [data-screen-label],
+html[data-od-inspect-mode] [data-od-id],
+html[data-od-inspect-mode] [data-screen-label] { cursor: crosshair !important; }
 </style>`;
   const withStyle = /<\/head>/i.test(doc)
     ? doc.replace(/<\/head>/i, style + '</head>')

@@ -40,6 +40,33 @@ import type { PreviewComment, PreviewCommentTarget } from '../types';
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
 type SlideState = { active: number; count: number };
 
+// The five basic style facets the inspect panel exposes. Kept narrow on
+// purpose — open-slide's design tokens panel only edits global tokens, so
+// the per-element delta is small + obvious + cheap to read back from
+// getComputedStyle on the iframe side.
+type InspectStyleSnapshot = {
+  color?: string;
+  backgroundColor?: string;
+  fontSize?: string;
+  fontWeight?: string;
+  paddingTop?: string;
+  paddingRight?: string;
+  paddingBottom?: string;
+  paddingLeft?: string;
+  borderRadius?: string;
+  textAlign?: string;
+  fontFamily?: string;
+  lineHeight?: string;
+};
+
+type InspectTarget = {
+  elementId: string;
+  selector: string;
+  label: string;
+  text: string;
+  style: InspectStyleSnapshot;
+};
+
 const htmlPreviewSlideState = new Map<string, SlideState>();
 
 interface Props {
@@ -203,6 +230,262 @@ function CommentPopover({
       </div>
     </div>
   );
+}
+
+// Maps a CSS computed value (e.g. "rgb(40, 50, 60)" or "16px") to a form
+// input value. Browsers return colors as rgb()/rgba(); HTML <input type=color>
+// only accepts "#rrggbb". Lengths come back as "12px" or "0px"; we strip
+// units for slider binding and re-append on emit.
+function rgbToHex(value: string | undefined): string {
+  if (!value) return '#000000';
+  const v = value.trim();
+  if (v.startsWith('#') && (v.length === 7 || v.length === 4)) {
+    if (v.length === 4) {
+      return '#' + [1, 2, 3].map((i) => {
+        const c = v.charAt(i);
+        return c + c;
+      }).join('');
+    }
+    return v;
+  }
+  const m = v.match(/rgba?\(\s*([0-9.]+)[ ,]+([0-9.]+)[ ,]+([0-9.]+)/i);
+  if (!m) return '#000000';
+  const toHex = (n: string) => {
+    const x = Math.max(0, Math.min(255, Math.round(Number(n))));
+    return x.toString(16).padStart(2, '0');
+  };
+  return '#' + toHex(m[1] ?? '0') + toHex(m[2] ?? '0') + toHex(m[3] ?? '0');
+}
+
+function pxToNumber(value: string | undefined): number {
+  if (!value) return 0;
+  const m = value.trim().match(/^(-?\d+(?:\.\d+)?)/);
+  return m ? Number(m[1]) : 0;
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function InspectPanel({
+  target,
+  onApply,
+  onResetElement,
+  onSaveToSource,
+  onClose,
+  saving,
+  savedAt,
+  error,
+}: {
+  target: InspectTarget;
+  onApply: (prop: string, value: string) => void;
+  onResetElement: (elementId: string) => void;
+  onSaveToSource: () => void;
+  onClose: () => void;
+  saving: boolean;
+  savedAt: number | null;
+  error: string | null;
+}) {
+  // Local "draft" mirror of the most recent value the user picked, so
+  // sliders/colors keep responding even before the iframe echoes back the
+  // computed result. Reset whenever the selected element changes.
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setDraft({});
+  }, [target.elementId]);
+
+  const value = (prop: string, fallback: string): string =>
+    draft[prop] ?? fallback;
+
+  function setVal(prop: string, raw: string) {
+    setDraft((d) => ({ ...d, [prop]: raw }));
+    onApply(prop, raw);
+  }
+
+  // Padding is a single shared slider that fans out to the four sides.
+  // Most authors want symmetric padding; an "advanced" toggle could surface
+  // per-side controls later.
+  const initialPadding = pxToNumber(target.style.paddingTop);
+  const initialFontSize = pxToNumber(target.style.fontSize);
+  const initialRadius = pxToNumber(target.style.borderRadius);
+
+  const colorHex = rgbToHex(target.style.color);
+  const bgHex = rgbToHex(target.style.backgroundColor);
+  const padding = value('padding', String(initialPadding));
+  const fontSize = value('font-size', String(initialFontSize));
+  const radius = value('border-radius', String(initialRadius));
+  const textAlign = value('text-align', target.style.textAlign || 'left');
+  const fontWeight = value('font-weight', target.style.fontWeight || '400');
+
+  const justSaved = savedAt && Date.now() - savedAt < 4000;
+
+  return (
+    <aside className="inspect-panel" data-testid="inspect-panel">
+      <header className="inspect-panel-head">
+        <div className="inspect-panel-title">
+          <strong>{target.label || target.elementId}</strong>
+          <code title={target.selector}>{target.elementId}</code>
+        </div>
+        <button type="button" className="ghost" onClick={onClose} aria-label="Close inspect">
+          ×
+        </button>
+      </header>
+
+      <section className="inspect-section">
+        <div className="inspect-section-label">Colors</div>
+        <div className="inspect-row">
+          <label htmlFor="ip-color">Text</label>
+          <input
+            id="ip-color"
+            data-testid="inspect-color"
+            type="color"
+            value={colorHex}
+            onChange={(e) => setVal('color', e.target.value)}
+          />
+          <input
+            type="text"
+            value={colorHex}
+            onChange={(e) => setVal('color', e.target.value)}
+            spellCheck={false}
+          />
+        </div>
+        <div className="inspect-row">
+          <label htmlFor="ip-bg">Background</label>
+          <input
+            id="ip-bg"
+            data-testid="inspect-bg"
+            type="color"
+            value={bgHex}
+            onChange={(e) => setVal('background-color', e.target.value)}
+          />
+          <input
+            type="text"
+            value={bgHex}
+            onChange={(e) => setVal('background-color', e.target.value)}
+            spellCheck={false}
+          />
+        </div>
+      </section>
+
+      <section className="inspect-section">
+        <div className="inspect-section-label">Typography</div>
+        <div className="inspect-row">
+          <label htmlFor="ip-fs">Size</label>
+          <input
+            id="ip-fs"
+            data-testid="inspect-font-size"
+            type="range"
+            min={8}
+            max={160}
+            step={1}
+            value={clamp(Number(fontSize) || initialFontSize, 8, 160)}
+            onChange={(e) => setVal('font-size', `${e.target.value}px`)}
+          />
+          <span className="inspect-row-value">{Math.round(Number(fontSize) || initialFontSize)}px</span>
+        </div>
+        <div className="inspect-row">
+          <label htmlFor="ip-fw">Weight</label>
+          <select
+            id="ip-fw"
+            value={fontWeight}
+            onChange={(e) => setVal('font-weight', e.target.value)}
+          >
+            {['100', '300', '400', '500', '600', '700', '800', '900'].map((w) => (
+              <option key={w} value={w}>{w}</option>
+            ))}
+          </select>
+        </div>
+        <div className="inspect-row">
+          <label htmlFor="ip-ta">Align</label>
+          <select
+            id="ip-ta"
+            value={textAlign}
+            onChange={(e) => setVal('text-align', e.target.value)}
+          >
+            {['left', 'center', 'right', 'justify'].map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        </div>
+      </section>
+
+      <section className="inspect-section">
+        <div className="inspect-section-label">Spacing &amp; Shape</div>
+        <div className="inspect-row">
+          <label htmlFor="ip-pad">Padding</label>
+          <input
+            id="ip-pad"
+            data-testid="inspect-padding"
+            type="range"
+            min={0}
+            max={120}
+            step={1}
+            value={clamp(Number(padding) || initialPadding, 0, 120)}
+            onChange={(e) => setVal('padding', `${e.target.value}px`)}
+          />
+          <span className="inspect-row-value">{Math.round(Number(padding) || initialPadding)}px</span>
+        </div>
+        <div className="inspect-row">
+          <label htmlFor="ip-rad">Radius</label>
+          <input
+            id="ip-rad"
+            data-testid="inspect-radius"
+            type="range"
+            min={0}
+            max={120}
+            step={1}
+            value={clamp(Number(radius) || initialRadius, 0, 120)}
+            onChange={(e) => setVal('border-radius', `${e.target.value}px`)}
+          />
+          <span className="inspect-row-value">{Math.round(Number(radius) || initialRadius)}px</span>
+        </div>
+      </section>
+
+      <footer className="inspect-panel-footer">
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => {
+            setDraft({});
+            onResetElement(target.elementId);
+          }}
+        >
+          Reset element
+        </button>
+        <button
+          type="button"
+          className="primary"
+          data-testid="inspect-save"
+          disabled={saving}
+          onClick={onSaveToSource}
+        >
+          {saving ? 'Saving…' : justSaved ? 'Saved ✓' : 'Save to source'}
+        </button>
+      </footer>
+      {error ? <div className="inspect-panel-error">{error}</div> : null}
+    </aside>
+  );
+}
+
+// Splice (or remove) the inspect overrides <style> block in an HTML
+// document. Idempotent: calling with the same css produces the same
+// document. Empty css strips the block entirely.
+//
+// Exported (via the module) so a unit test can drive it without a live
+// browser. Pure string transform — no DOM, no parser dependency.
+export function applyInspectOverridesToSource(source: string, css: string): string {
+  const trimmed = css.trim();
+  const styleRegex = /<style[^>]*data-od-inspect-overrides[^>]*>[\s\S]*?<\/style>\s*/i;
+  const stripped = source.replace(styleRegex, '');
+  if (!trimmed) return stripped;
+  const block = `<style data-od-inspect-overrides>\n${trimmed}\n</style>\n`;
+  if (/<\/head>/i.test(stripped)) {
+    return stripped.replace(/<\/head>/i, `${block}</head>`);
+  }
+  if (/<head[^>]*>/i.test(stripped)) {
+    return stripped.replace(/<head[^>]*>/i, (m) => `${m}${block}`);
+  }
+  return block + stripped;
 }
 
 function CommentPreviewOverlays({
@@ -620,10 +903,20 @@ function HtmlViewer({
   const [inTabPresent, setInTabPresent] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [commentMode, setCommentMode] = useState(false);
+  const [inspectMode, setInspectMode] = useState(false);
   const [activeCommentTarget, setActiveCommentTarget] = useState<PreviewCommentSnapshot | null>(null);
   const [hoveredCommentTarget, setHoveredCommentTarget] = useState<PreviewCommentSnapshot | null>(null);
   const [liveCommentTargets, setLiveCommentTargets] = useState<Map<string, PreviewCommentSnapshot>>(() => new Map());
   const [commentDraft, setCommentDraft] = useState('');
+  // Inspect mode shares the iframe selection bridge with comment mode but
+  // routes the picked element to a side panel that mutates per-element CSS
+  // overrides via postMessage. Save-to-source persists the cumulative
+  // override block back into the artifact HTML.
+  const [activeInspectTarget, setActiveInspectTarget] = useState<InspectTarget | null>(null);
+  const [inspectOverridesCss, setInspectOverridesCss] = useState('');
+  const [savingInspect, setSavingInspect] = useState(false);
+  const [inspectSavedAt, setInspectSavedAt] = useState<number | null>(null);
+  const [inspectError, setInspectError] = useState<string | null>(null);
   const previewStateKey = `${projectId}:${file.name}`;
   // Slide deck nav state: the iframe posts the active index + total count
   // back to the host every time a slide settles. Host renders prev/next
@@ -698,8 +991,9 @@ function HtmlViewer({
       baseHref: projectRawUrl(projectId, baseDirFor(file.name)),
       initialSlideIndex: htmlPreviewSlideState.get(previewStateKey)?.active ?? 0,
       commentBridge: commentMode,
+      inspectBridge: inspectMode,
     }) : ''),
-    [previewSource, effectiveDeck, projectId, file.name, previewStateKey, commentMode],
+    [previewSource, effectiveDeck, projectId, file.name, previewStateKey, commentMode, inspectMode],
   );
 
   useEffect(() => {
@@ -730,11 +1024,43 @@ function HtmlViewer({
   }, [commentMode, srcDoc]);
 
   useEffect(() => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage({ type: 'od:inspect-mode', enabled: inspectMode }, '*');
+  }, [inspectMode, srcDoc]);
+
+  useEffect(() => {
     setActiveCommentTarget(null);
     setHoveredCommentTarget(null);
     setLiveCommentTargets(new Map());
     setCommentDraft('');
+    setActiveInspectTarget(null);
+    setInspectOverridesCss('');
+    setInspectSavedAt(null);
+    setInspectError(null);
   }, [file.name]);
+
+  // Selecting a new file or turning inspect off resets the panel target.
+  useEffect(() => {
+    if (!inspectMode) {
+      setActiveInspectTarget(null);
+      setInspectError(null);
+    }
+  }, [inspectMode]);
+
+  // Listen for the iframe's accumulated overrides snapshot — host needs the
+  // raw CSS body to splice into the source on Save.
+  useEffect(() => {
+    if (!inspectMode) return;
+    function onMessage(ev: MessageEvent) {
+      if (ev.source !== iframeRef.current?.contentWindow) return;
+      const data = ev.data as { type?: string; css?: string } | null;
+      if (!data || data.type !== 'od:inspect-overrides') return;
+      setInspectOverridesCss(typeof data.css === 'string' ? data.css : '');
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [inspectMode]);
 
   useEffect(() => {
     if (!commentMode) {
@@ -804,10 +1130,83 @@ function HtmlViewer({
     return () => window.removeEventListener('message', onMessage);
   }, [commentMode, file.name, previewComments]);
 
+  // Inspect-mode picker: same `od:comment-target` payload, different sink.
+  // The bridge tags the message with a computed-style snapshot so the panel
+  // can show real starting values for color / typography / spacing / radius.
+  useEffect(() => {
+    if (!inspectMode) return;
+    function onMessage(ev: MessageEvent) {
+      if (ev.source !== iframeRef.current?.contentWindow) return;
+      const data = ev.data as
+        | { type?: string; elementId?: string; selector?: string; label?: string; text?: string; style?: InspectStyleSnapshot }
+        | null;
+      if (!data || data.type !== 'od:comment-target') return;
+      if (!data.elementId || !data.selector) return;
+      setActiveInspectTarget({
+        elementId: String(data.elementId),
+        selector: String(data.selector),
+        label: String(data.label || ''),
+        text: String(data.text || ''),
+        style: data.style && typeof data.style === 'object' ? data.style : {},
+      });
+      setInspectError(null);
+      setInspectSavedAt(null);
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [inspectMode]);
+
   function postSlide(action: 'next' | 'prev' | 'first' | 'last') {
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
     win.postMessage({ type: 'od:slide', action }, '*');
+  }
+
+  function postInspectSet(elementId: string, selector: string, prop: string, value: string) {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage(
+      { type: 'od:inspect-set', elementId, selector, prop, value },
+      '*',
+    );
+  }
+
+  function postInspectReset(elementId?: string) {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage({ type: 'od:inspect-reset', elementId }, '*');
+  }
+
+  // Persist accumulated inspect overrides into the artifact source: replace
+  // (or insert) a single <style data-od-inspect-overrides> block in <head>.
+  // The CSS body comes from the iframe — it's the same string the live
+  // sandbox is already applying, so reload-after-save shows identical
+  // rendering. POSTing to /api/projects/:id/files upserts the file via
+  // writeProjectFile (multipart-or-JSON; we use JSON).
+  async function saveInspectToSource() {
+    if (!source) return;
+    setSavingInspect(true);
+    setInspectError(null);
+    try {
+      const css = inspectOverridesCss.trim();
+      const next = applyInspectOverridesToSource(source, css);
+      const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: file.name, content: next }),
+      });
+      if (!resp.ok) {
+        const payload = await resp.json().catch(() => null) as { error?: string; message?: string } | null;
+        throw new Error(payload?.error || payload?.message || `Save failed (${resp.status})`);
+      }
+      setSource(next);
+      setInspectSavedAt(Date.now());
+      setReloadKey((k) => k + 1);
+    } catch (err) {
+      setInspectError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSavingInspect(false);
+    }
   }
 
   // Keyboard nav on the host, so the user can press ←/→ even when focus
@@ -1162,17 +1561,29 @@ function HtmlViewer({
             type="button"
             data-testid="comment-mode-toggle"
             title={t('fileViewer.comment')}
-            onClick={() => setCommentMode((v) => !v)}
+            onClick={() => {
+              setCommentMode((v) => {
+                const next = !v;
+                if (next) setInspectMode(false);
+                return next;
+              });
+            }}
           >
             <Icon name="comment" size={13} />
             <span>{t('fileViewer.comment')}</span>
           </button>
           <button
-            className="viewer-action"
+            className={`viewer-action${inspectMode ? ' active' : ''}`}
             type="button"
-            disabled
-            data-coming-soon="true"
+            data-testid="inspect-mode-toggle"
             title={t('fileViewer.edit')}
+            onClick={() => {
+              setInspectMode((v) => {
+                const next = !v;
+                if (next) setCommentMode(false);
+                return next;
+              });
+            }}
           >
             <Icon name="edit" size={13} />
             <span>{t('fileViewer.edit')}</span>
@@ -1453,6 +1864,32 @@ function HtmlViewer({
                 }}
                 t={t}
               />
+            ) : null}
+            {inspectMode && activeInspectTarget ? (
+              <InspectPanel
+                target={activeInspectTarget}
+                onApply={(prop, value) =>
+                  postInspectSet(activeInspectTarget.elementId, activeInspectTarget.selector, prop, value)
+                }
+                onResetElement={(elementId) => {
+                  postInspectReset(elementId);
+                  setActiveInspectTarget((current) => current && current.elementId === elementId
+                    ? current
+                    : current);
+                }}
+                onSaveToSource={() => {
+                  void saveInspectToSource();
+                }}
+                onClose={() => setActiveInspectTarget(null)}
+                saving={savingInspect}
+                savedAt={inspectSavedAt}
+                error={inspectError}
+              />
+            ) : null}
+            {inspectMode && !activeInspectTarget ? (
+              <div className="inspect-empty-hint" data-testid="inspect-empty-hint">
+                Click any element with <code>data-od-id</code> to tune its style.
+              </div>
             ) : null}
           </div>
         ) : (
