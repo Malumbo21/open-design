@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-04
+
+A platform-expanding follow-up to 0.3.0: Linux desktop support, live-reload previews, the Critique Theater foundation, the Atelier Zero editorial design system, four new locales, and a wave of security and Web UI hardening. 31 merged PRs from 22 contributors.
+
+### Added
+
+#### Packaging & deployment
+- **Linux x64 AppImage** support in `tools-pack` and the release workflows. ([#369])
+
+#### Web / UI
+- **Live-reload preview iframes** when project files change on disk. ([#409])
+
+#### Skills, design systems & prompt templates
+- **Atelier Zero** editorial collage landing-page design system. ([#366])
+- `open-design-landing` skill rename, **kami skill bundle**, and landing OG assets. ([#428])
+
+#### Critique workflow
+- **Critique Theater foundation** — contracts and parser (Phases 0-2). ([#387])
+
+#### Agents & daemon
+- `OD_MEDIA_CONFIG_DIR` environment variable to relocate `media-config.json`. ([#411])
+- Modernized multi-provider API proxy routing. ([#385])
+
+#### Internationalization
+- Complete **French** localization and README. ([#326], [#434])
+- **Ukrainian** UI localization. ([#395])
+- **Russian** UI locale refresh with translated README. ([#393])
+- Russian gallery metadata. ([#396])
+- French Quickstart guide. ([#397])
+
+### Changed
+
+- Refactor `RUNTIME_DATA_DIR` resolution logic. ([#391])
+
+### Fixed
+
+#### Security
+- Bind daemon to localhost by default and validate origins. ([#365])
+- Strip `ANTHROPIC_API_KEY` from environment when spawning Claude Code. ([#400])
+- Normalize daemon proxy origins. ([#392])
+
+#### Daemon
+- Expose skill resources via cwd-relative aliases. ([#435])
+- Support nested paths in project file serve route. ([#401])
+
+#### Web UI
+- Prevent vertical scrollbar on `ws-tabs-bar`. ([#448])
+- Language option button height truncation in Settings. ([#447])
+- Isolate preview blob export paths. ([#429])
+- Split execution-mode tabs and align active chip visuals. ([#418])
+- Tighten entry-tab layout and design-system showcase color picker. ([#412])
+- URL-load HTML preview iframes by default (`?forceInline=1` opt-out). ([#384])
+- Lift coming-soon tip above sticky tabs and make it readable in dark theme. ([#382])
+
+#### Desktop
+- Show window on macOS dock activate. ([#270])
+
+#### Packaging
+- Bundle prompt templates in packaged desktop resources. ([#417])
+
+#### Landing page
+- Deploy landing-page with `npm wrangler`. ([#421])
+
+#### Codex
+- Fix Gemini CLI trust handling. ([#352])
+
+### Internal
+
+- Auto-generated metrics SVG and contributors wall refresh. ([#406], [#407])
+
 ## [0.3.0] - 2026-05-03
 
 A fast follow-up to 0.2.0 focused on richer design workflows, packaged-agent reliability, export/deploy flows, and broader internationalization. 39 merged PRs from 25 contributors.
@@ -249,7 +319,8 @@ First public release of Open Design — a local-first, open-source alternative t
 - Beta release workflow placeholder. ([#36])
 - Git commit co-author policy. ([#131])
 
-[Unreleased]: https://github.com/nexu-io/open-design/compare/open-design-v0.3.0...HEAD
+[Unreleased]: https://github.com/nexu-io/open-design/compare/open-design-v0.4.0...HEAD
+[0.4.0]: https://github.com/nexu-io/open-design/releases/tag/open-design-v0.4.0
 [0.3.0]: https://github.com/nexu-io/open-design/releases/tag/open-design-v0.3.0
 [0.2.0]: https://github.com/nexu-io/open-design/releases/tag/open-design-v0.2.0
 [0.1.0]: https://github.com/nexu-io/open-design/releases/tag/open-design-v0.1.0
@@ -421,3 +492,35 @@ First public release of Open Design — a local-first, open-source alternative t
 [#296]: https://github.com/nexu-io/open-design/pull/296
 [#300]: https://github.com/nexu-io/open-design/pull/300
 [#309]: https://github.com/nexu-io/open-design/pull/309
+[#270]: https://github.com/nexu-io/open-design/pull/270
+[#326]: https://github.com/nexu-io/open-design/pull/326
+[#352]: https://github.com/nexu-io/open-design/pull/352
+[#365]: https://github.com/nexu-io/open-design/pull/365
+[#366]: https://github.com/nexu-io/open-design/pull/366
+[#369]: https://github.com/nexu-io/open-design/pull/369
+[#382]: https://github.com/nexu-io/open-design/pull/382
+[#384]: https://github.com/nexu-io/open-design/pull/384
+[#385]: https://github.com/nexu-io/open-design/pull/385
+[#387]: https://github.com/nexu-io/open-design/pull/387
+[#391]: https://github.com/nexu-io/open-design/pull/391
+[#392]: https://github.com/nexu-io/open-design/pull/392
+[#393]: https://github.com/nexu-io/open-design/pull/393
+[#395]: https://github.com/nexu-io/open-design/pull/395
+[#396]: https://github.com/nexu-io/open-design/pull/396
+[#397]: https://github.com/nexu-io/open-design/pull/397
+[#400]: https://github.com/nexu-io/open-design/pull/400
+[#401]: https://github.com/nexu-io/open-design/pull/401
+[#406]: https://github.com/nexu-io/open-design/pull/406
+[#407]: https://github.com/nexu-io/open-design/pull/407
+[#409]: https://github.com/nexu-io/open-design/pull/409
+[#411]: https://github.com/nexu-io/open-design/pull/411
+[#412]: https://github.com/nexu-io/open-design/pull/412
+[#417]: https://github.com/nexu-io/open-design/pull/417
+[#418]: https://github.com/nexu-io/open-design/pull/418
+[#421]: https://github.com/nexu-io/open-design/pull/421
+[#428]: https://github.com/nexu-io/open-design/pull/428
+[#429]: https://github.com/nexu-io/open-design/pull/429
+[#434]: https://github.com/nexu-io/open-design/pull/434
+[#435]: https://github.com/nexu-io/open-design/pull/435
+[#447]: https://github.com/nexu-io/open-design/pull/447
+[#448]: https://github.com/nexu-io/open-design/pull/448
