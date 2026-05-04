@@ -35,6 +35,33 @@ interface SeedFixture {
   source?: string;
 }
 
+// Local mirror of the daemon `ProjectFile` shape. Kept in sync with
+// `packages/contracts/src/api/files.ts` — the assistant message stores
+// `producedFiles: ProjectFile[]`, so we type the upload response against
+// it instead of fabricating a string array.
+interface ProjectFile {
+  name: string;
+  path?: string;
+  type?: 'file' | 'dir';
+  size: number;
+  mtime: number;
+  kind: string;
+  mime: string;
+}
+
+interface ProjectFileResponse {
+  file: ProjectFile;
+}
+
+interface SeedProjectSummary {
+  id: string;
+  metadata?: {
+    seeded?: boolean;
+    source?: string;
+    [k: string]: unknown;
+  } | null;
+}
+
 const DECKS: SeedFixture[] = [
   {
     skillId: 'html-ppt-pitch-deck',
@@ -208,11 +235,16 @@ async function seedOne(daemonUrl: string, fix: SeedFixture): Promise<void> {
     metadata: { kind: fix.kind, seeded: true, source: 'seed-test-projects' },
   });
 
-  await api(daemonUrl, 'POST', `/api/projects/${id}/files`, {
-    name: 'index.html',
-    content: html,
-    encoding: 'utf8',
-  });
+  const uploaded = await api<ProjectFileResponse>(
+    daemonUrl,
+    'POST',
+    `/api/projects/${id}/files`,
+    {
+      name: 'index.html',
+      content: html,
+      encoding: 'utf8',
+    },
+  );
 
   await api(daemonUrl, 'PUT', `/api/projects/${id}/tabs`, {
     tabs: ['index.html'],
@@ -250,19 +282,29 @@ async function seedOne(daemonUrl: string, fix: SeedFixture): Promise<void> {
       runStatus: 'succeeded',
       startedAt: now,
       endedAt: now,
-      producedFiles: ['index.html'],
+      producedFiles: [uploaded.file],
       createdAt: now,
     },
   );
 }
 
 async function clearSeeded(daemonUrl: string): Promise<void> {
-  const { projects } = await api<{ projects: Array<{ id: string }> }>(
+  const { projects } = await api<{ projects: SeedProjectSummary[] }>(
     daemonUrl,
     'GET',
     '/api/projects',
   );
-  const seeded = projects.filter((p) => p.id.startsWith(SEED_PREFIX));
+  // Project ids are caller-supplied through the public daemon API, so
+  // the `seed-` prefix alone is not a strong enough marker for a
+  // destructive delete. Require both the prefix AND the metadata stamp
+  // we wrote in `seedOne` so a manually-created project that happens to
+  // share the prefix is left alone.
+  const seeded = projects.filter(
+    (p) =>
+      p.id.startsWith(SEED_PREFIX) &&
+      p.metadata?.seeded === true &&
+      p.metadata?.source === 'seed-test-projects',
+  );
   if (seeded.length === 0) {
     console.log('no seeded projects to remove.');
     return;
